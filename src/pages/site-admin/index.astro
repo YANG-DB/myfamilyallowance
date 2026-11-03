@@ -45,19 +45,77 @@ const stats = isAdmin ? await getSiteStats() : null;
       </div>
     ) : (
       stats && (
-        <div class="stat-grid">
-          <article class="stat-card">
-            <div class="stat-label">Users (Families)</div>
-            <div class="stat-value">{stats.users.toLocaleString()}</div>
-          </article>
-          <article class="stat-card">
-            <div class="stat-label">Kids</div>
-            <div class="stat-value">{stats.kids.toLocaleString()}</div>
-          </article>
-          <article class="stat-card">
-            <div class="stat-label">Transactions</div>
-            <div class="stat-value">{stats.transactions.toLocaleString()}</div>
-          </article>
+        <div class="stack" style="gap: 1.25rem">
+          <div class="stat-grid">
+            <article class="stat-card">
+              <div class="stat-label">Users (Families)</div>
+              <div class="stat-value">{stats.users.toLocaleString()}</div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-label">Kids</div>
+              <div class="stat-value">{stats.kids.toLocaleString()}</div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-label">Transactions</div>
+              <div class="stat-value">{stats.transactions.toLocaleString()}</div>
+            </article>
+          </div>
+
+          <div class="stat-grid">
+            <article class="stat-card">
+              <div class="stat-label">Logins (Past 24h)</div>
+              <div class="stat-value">{stats.loginsLast24Hours.toLocaleString()}</div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-label">Logins (Past 7d)</div>
+              <div class="stat-value">{stats.loginsLast7Days.toLocaleString()}</div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-label">Logins (Past 30d)</div>
+              <div class="stat-value">{stats.loginsLast30Days.toLocaleString()}</div>
+            </article>
+          </div>
+
+          <div class="panel">
+            <h2 id="recent-logins-heading">Last 10 logins</h2>
+            {stats.recentLogins.length === 0 ? (
+              <p class="muted">No logins recorded yet.</p>
+            ) : (
+              <div
+                class="table-wrap"
+                tabindex="0"
+                role="region"
+                aria-labelledby="recent-logins-heading"
+              >
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Name</th>
+                      <th scope="col">Email</th>
+                      <th scope="col">Last login</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.recentLogins.map((u) => (
+                      <tr>
+                        <th scope="row">{u.name}</th>
+                        <td>{u.email}</td>
+                        <td>
+                          {u.lastLogIn
+                            ? u.lastLogIn.toLocaleString('en-US', {
+                                timeZone: 'America/Chicago',
+                                dateStyle: 'medium',
+                                timeStyle: 'short',
+                              })
+                            : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       )
     )}

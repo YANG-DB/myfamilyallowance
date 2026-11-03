@@ -2,6 +2,7 @@
 
 ## 2026-11-03
 
+- Track `lastLogIn` on users when signing in with Google, and show 24h/7d/30d login counts plus the last 10 logins on `/site-admin`.
 - Add password-protected `/site-admin` dashboard showing total users, kids, and transactions.
 
 ## 2026-08-31

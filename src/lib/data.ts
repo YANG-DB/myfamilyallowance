@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql, sum } from 'drizzle-orm';
+import { and, desc, eq, gte, isNotNull, sql, sum } from 'drizzle-orm';
 import { db } from '../../db';
 import { kids, transactions, users, type Kid, type User } from '../../db/schema';
 import { generateFamilySlug } from './slug';
@@ -8,6 +8,7 @@ export async function findOrCreateUserFromGoogle(input: {
   email: string;
   name: string;
 }): Promise<User> {
+  const now = new Date();
   const [existing] = await db
     .select()
     .from(users)
@@ -17,7 +18,7 @@ export async function findOrCreateUserFromGoogle(input: {
   if (existing) {
     const [updated] = await db
       .update(users)
-      .set({ email: input.email, name: input.name })
+      .set({ email: input.email, name: input.name, lastLogIn: now })
       .where(eq(users.id, existing.id))
       .returning();
     return updated!;
@@ -33,6 +34,7 @@ export async function findOrCreateUserFromGoogle(input: {
           email: input.email,
           name: input.name,
           familySlug,
+          lastLogIn: now,
         })
         .returning();
       return created!;
@@ -118,15 +120,55 @@ export async function hasRecentAllowance(kidId: string, withinDays = 6): Promise
 }
 
 export async function getSiteStats() {
-  const [[userRow], [kidRow], [txRow]] = await Promise.all([
+  const now = Date.now();
+  const since24h = new Date(now - 24 * 60 * 60 * 1000);
+  const since7d = new Date(now - 7 * 24 * 60 * 60 * 1000);
+  const since30d = new Date(now - 30 * 24 * 60 * 60 * 1000);
+
+  const [
+    [userRow],
+    [kidRow],
+    [txRow],
+    [logins24hRow],
+    [logins7dRow],
+    [logins30dRow],
+    recentLogins,
+  ] = await Promise.all([
     db.select({ count: sql<number>`count(*)`.mapWith(Number) }).from(users),
     db.select({ count: sql<number>`count(*)`.mapWith(Number) }).from(kids),
     db.select({ count: sql<number>`count(*)`.mapWith(Number) }).from(transactions),
+    db
+      .select({ count: sql<number>`count(*)`.mapWith(Number) })
+      .from(users)
+      .where(gte(users.lastLogIn, since24h)),
+    db
+      .select({ count: sql<number>`count(*)`.mapWith(Number) })
+      .from(users)
+      .where(gte(users.lastLogIn, since7d)),
+    db
+      .select({ count: sql<number>`count(*)`.mapWith(Number) })
+      .from(users)
+      .where(gte(users.lastLogIn, since30d)),
+    db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        lastLogIn: users.lastLogIn,
+      })
+      .from(users)
+      .where(isNotNull(users.lastLogIn))
+      .orderBy(desc(users.lastLogIn))
+      .limit(10),
   ]);
 
   return {
     users: userRow?.count ?? 0,
     kids: kidRow?.count ?? 0,
     transactions: txRow?.count ?? 0,
+    loginsLast24Hours: logins24hRow?.count ?? 0,
+    loginsLast7Days: logins7dRow?.count ?? 0,
+    loginsLast30Days: logins30dRow?.count ?? 0,
+    recentLogins,
   };
 }

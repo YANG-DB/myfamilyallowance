@@ -18,6 +18,7 @@ export const users = pgTable('users', {
   familyPasswordHash: text('family_password_hash'),
   familyPasswordVersion: integer('family_password_version').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  lastLogIn: timestamp('last_log_in', { withTimezone: true }),
 });
 
 export const kids = pgTable(
