@@ -116,3 +116,17 @@ export async function hasRecentAllowance(kidId: string, withinDays = 6): Promise
     .limit(1);
   return Boolean(row);
 }
+
+export async function getSiteStats() {
+  const [[userRow], [kidRow], [txRow]] = await Promise.all([
+    db.select({ count: sql<number>`count(*)`.mapWith(Number) }).from(users),
+    db.select({ count: sql<number>`count(*)`.mapWith(Number) }).from(kids),
+    db.select({ count: sql<number>`count(*)`.mapWith(Number) }).from(transactions),
+  ]);
+
+  return {
+    users: userRow?.count ?? 0,
+    kids: kidRow?.count ?? 0,
+    transactions: txRow?.count ?? 0,
+  };
+}

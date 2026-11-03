@@ -1,7 +1,12 @@
 # Changelog
 
+## 2026-11-03
+
+- Add password-protected `/site-admin` dashboard showing total users, kids, and transactions.
+
 ## 2026-08-31
 
+- Add a 120×120 PNG favicon alongside the existing SVG.
 - Add Privacy Policy and Terms of Use pages, linked from the home page footer.
 
 ## 2026-08-25

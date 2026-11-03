@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { sealData, unsealData } from 'iron-session';
 import type { AstroCookies } from 'astro';
@@ -6,10 +7,12 @@ import { users, type User } from '../../db/schema';
 
 const PARENT_COOKIE = 'mfa_parent';
 const FAMILY_COOKIE = 'mfa_family';
+const SITE_ADMIN_COOKIE = 'mfa_site_admin';
 const OAUTH_STATE_COOKIE = 'mfa_oauth_state';
 
 const PARENT_TTL = 60 * 60 * 24 * 14; // 14 days
 const FAMILY_TTL = 60 * 60 * 24 * 7; // 7 days
+const SITE_ADMIN_TTL = 60 * 60 * 24 * 7; // 7 days
 
 export type ParentSession = {
   userId: string;
@@ -18,6 +21,10 @@ export type ParentSession = {
 export type FamilySession = {
   slug: string;
   passwordVersion: number;
+};
+
+export type SiteAdminSession = {
+  authenticated: true;
 };
 
 function sessionPassword(): string {
@@ -168,4 +175,50 @@ export function googleRedirectUri(): string {
     process.env.GOOGLE_REDIRECT_URI ||
     `${siteUrl()}/auth/callback`
   );
+}
+
+export function verifySiteAdminPassword(input: string): boolean {
+  const expected =
+    import.meta.env.SITE_ADMIN_PASSWORD ||
+    process.env.SITE_ADMIN_PASSWORD ||
+    import.meta.env.ADMIN_PASSWORD ||
+    process.env.ADMIN_PASSWORD ||
+    '';
+  if (!expected || !input) return false;
+  const a = createHash('sha256').update(input).digest();
+  const b = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(a, b);
+}
+
+export async function setSiteAdminSession(cookies: AstroCookies) {
+  const sealed = await sealData<SiteAdminSession>(
+    { authenticated: true },
+    {
+      password: sessionPassword(),
+      ttl: SITE_ADMIN_TTL,
+    },
+  );
+  cookies.set(SITE_ADMIN_COOKIE, sealed, {
+    ...baseCookie,
+    secure: cookieSecure(),
+    maxAge: SITE_ADMIN_TTL,
+  });
+}
+
+export async function requireSiteAdmin(cookies: AstroCookies): Promise<boolean> {
+  const raw = cookies.get(SITE_ADMIN_COOKIE)?.value;
+  if (!raw) return false;
+  try {
+    const data = await unsealData<SiteAdminSession>(raw, {
+      password: sessionPassword(),
+      ttl: SITE_ADMIN_TTL,
+    });
+    return data?.authenticated === true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearSiteAdminSession(cookies: AstroCookies) {
+  cookies.delete(SITE_ADMIN_COOKIE, { path: '/' });
 }

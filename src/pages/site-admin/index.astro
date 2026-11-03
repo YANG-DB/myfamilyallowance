@@ -1,0 +1,65 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { requireSiteAdmin } from '../../lib/auth';
+import { getSiteStats } from '../../lib/data';
+
+const isAdmin = await requireSiteAdmin(Astro.cookies);
+const error = Astro.url.searchParams.get('error');
+const stats = isAdmin ? await getSiteStats() : null;
+---
+
+<BaseLayout title="Site Admin · My Family Allowance">
+  <Fragment slot="nav">
+    <a class="btn btn-ghost btn-small" href="/">Home</a>
+    {isAdmin && (
+      <form method="POST" action="/api/site-admin/logout" style="display:inline">
+        <button class="btn btn-ghost btn-small" type="submit">Log out</button>
+      </form>
+    )}
+  </Fragment>
+
+  <section style="padding: 1rem 0 2.5rem">
+    <h1>Site admin</h1>
+
+    {error && <div class="flash flash-err">{error}</div>}
+
+    {!isAdmin ? (
+      <div class="panel" style="max-width:420px">
+        <h2>Sign in</h2>
+        <p>Enter the site admin password to continue.</p>
+        <form class="form-grid" method="POST" action="/api/site-admin/login">
+          <label for="site-admin-password">
+            Password
+            <input
+              id="site-admin-password"
+              type="password"
+              name="password"
+              required
+              autocomplete="current-password"
+              enterkeyhint="done"
+              autofocus
+            />
+          </label>
+          <button class="btn btn-primary" type="submit">Sign in</button>
+        </form>
+      </div>
+    ) : (
+      stats && (
+        <div class="stat-grid">
+          <article class="stat-card">
+            <div class="stat-label">Users (Families)</div>
+            <div class="stat-value">{stats.users.toLocaleString()}</div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-label">Kids</div>
+            <div class="stat-value">{stats.kids.toLocaleString()}</div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-label">Transactions</div>
+            <div class="stat-value">{stats.transactions.toLocaleString()}</div>
+          </article>
+        </div>
+      )
+    )}
+  </section>
+</BaseLayout>
