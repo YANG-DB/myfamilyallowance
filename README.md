@@ -3,6 +3,28 @@
 Private family allowance tracking using Astro, Firebase Hosting, Cloud Functions,
 and Firestore. Each parent and kid has their own reusable password.
 
+## Screenshots
+
+**Parent dashboard** — at a glance, see how much each kid has spent this month
+against their limit, plus a running yearly total. Click a kid's gauge to jump to
+their page.
+
+![Parent dashboard spending overview](docs/screenshots/admin-overview.png)
+
+**Kid's own page** — balance, a spending gauge for the month, and a quick form to
+log a purchase or save up for something next month.
+
+![Kid page with balance and monthly spending gauge](docs/screenshots/kid-page.png)
+
+**Transaction history** — sortable, filterable, categorized, with purchases the
+parents already covered (like sports gear or streaming) clearly marked so they
+don't count against the kid's own budget.
+
+![Transaction history table with categories and sorting](docs/screenshots/transaction-history.png)
+
+*(Screenshots are from the local demo mode with sample data — no real family
+information.)*
+
 ## Local demo
 
 Create `.env` with `DEMO_MODE=true` and `SITE_URL=http://localhost:8888`, then run:
