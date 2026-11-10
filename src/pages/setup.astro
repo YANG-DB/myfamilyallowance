@@ -1,0 +1,19 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+const error=Astro.url.searchParams.get('error');
+---
+<BaseLayout title="First parent setup · My Family Allowance">
+  <section class="panel" style="max-width:480px;margin:2rem auto">
+    <h1>Set up your parent account</h1>
+    <p>This setup is available once, using the private setup token from your deployment.</p>
+    {error && <p class="flash flash-err" role="alert">{error}</p>}
+    <form class="form-grid" method="POST" action="/api/auth/setup">
+      <label>Owner email<input type="email" name="email" required maxlength="254" autocomplete="username" /></label>
+      <label>Private setup token<input type="password" name="setupToken" required maxlength="256" autocomplete="off" /></label>
+      <label>Choose a password<input type="password" name="password" required minlength="12" maxlength="128" autocomplete="new-password" /></label>
+      <label>Confirm password<input type="password" name="confirmPassword" required minlength="12" maxlength="128" autocomplete="new-password" /></label>
+      <button class="btn btn-primary" type="submit">Create my parent account</button>
+    </form>
+    <p><a href="/parent-login">Already set up? Sign in</a></p>
+  </section>
+</BaseLayout>

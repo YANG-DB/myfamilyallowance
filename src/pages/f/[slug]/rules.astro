@@ -1,0 +1,32 @@
+---
+import BaseLayout from '../../../layouts/BaseLayout.astro';
+import { requireFamilyAccess, getSessionKid } from '../../../lib/auth';
+import { getFamilyBySlug } from '../../../lib/data';
+import { renderSimpleMarkdown } from '../../../lib/markdown';
+import rulesMd from '../../../../data/rules.md?raw';
+
+const slug = Astro.params.slug;
+if (!slug || !/^[a-z0-9]{5}$/.test(slug)) {
+  return Astro.redirect('/');
+}
+
+const owner = await requireFamilyAccess(Astro.cookies, slug);
+if (!owner) {
+  const kid = await getSessionKid(Astro.cookies);
+  const parent = kid ? await getFamilyBySlug(slug) : null;
+  if (!kid || parent?.id !== kid.userId) return Astro.redirect('/kid-login');
+}
+
+const rulesHtml = renderSimpleMarkdown(rulesMd);
+const backHref = owner ? '/admin' : `/f/${slug}`;
+---
+
+<BaseLayout title="Family rules · My Family Allowance">
+  <Fragment slot="nav">
+    <a class="btn btn-ghost btn-small" href={backHref}>Back</a>
+  </Fragment>
+
+  <section style="padding: 1rem 0 2.5rem">
+    <div class="panel rules-content" set:html={rulesHtml} />
+  </section>
+</BaseLayout>

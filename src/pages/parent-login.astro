@@ -1,0 +1,19 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { getParentSession } from '../lib/auth';
+if (await getParentSession(Astro.cookies)) return Astro.redirect('/admin');
+const error=Astro.url.searchParams.get('error');
+---
+<BaseLayout title="Parent sign-in · My Family Allowance">
+  <section class="panel" style="max-width:480px;margin:2rem auto">
+    <h1>Parent sign-in</h1>
+    <p>Use your own email and family account password.</p>
+    {error && <p class="flash flash-err" role="alert">{error}</p>}
+    <form class="form-grid" method="POST" action="/api/auth/session">
+      <label>Email<input type="email" name="email" required maxlength="254" autocomplete="username" /></label>
+      <label>Password<input type="password" name="password" required maxlength="128" autocomplete="current-password" /></label>
+      <button class="btn btn-primary" type="submit">Sign in</button>
+    </form>
+    <p><a href="/kid-login">Kid sign-in</a></p>
+  </section>
+</BaseLayout>

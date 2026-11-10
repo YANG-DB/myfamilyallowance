@@ -1,171 +1,65 @@
-import { eq } from 'drizzle-orm';
-import { sealData, unsealData } from 'iron-session';
 import type { AstroCookies } from 'astro';
-import { db } from '../../db';
-import { users, type User } from '../../db/schema';
+import { sealData, unsealData } from 'iron-session';
+import { demoMode } from './demo';
+import { getParentCredential } from './accounts';
+import { getUser, getKid } from './data';
+import { sessionSecret as password } from './secret';
+import type { Kid, User, ParentCredential } from './models';
 
-const PARENT_COOKIE = 'mfa_parent';
-const FAMILY_COOKIE = 'mfa_family';
-const OAUTH_STATE_COOKIE = 'mfa_oauth_state';
-
-const PARENT_TTL = 60 * 60 * 24 * 14; // 14 days
-const FAMILY_TTL = 60 * 60 * 24 * 7; // 7 days
-
-export type ParentSession = {
-  userId: string;
-};
-
-export type FamilySession = {
-  slug: string;
-  passwordVersion: number;
-};
-
-function sessionPassword(): string {
-  const secret = import.meta.env.SESSION_SECRET || process.env.SESSION_SECRET;
-  if (!secret || secret.length < 32) {
-    throw new Error('SESSION_SECRET must be set and at least 32 characters');
-  }
-  return secret;
+const COOKIE = '__session'; // Firebase Hosting forwards only this cookie to Functions.
+const KID_TTL = 60 * 60 * 24 * 7;
+export function sessionOptions(maxAge: number) {
+  return {httpOnly: true, path: '/', sameSite: 'lax' as const, secure: !import.meta.env.DEV, maxAge};
 }
-
-function cookieSecure(): boolean {
-  const site = import.meta.env.SITE_URL || process.env.SITE_URL || '';
-  return site.startsWith('https://');
-}
-
-const baseCookie = {
-  httpOnly: true,
-  path: '/',
-  sameSite: 'lax' as const,
-};
-
-export async function setParentSession(cookies: AstroCookies, session: ParentSession) {
-  const sealed = await sealData(session, {
-    password: sessionPassword(),
-    ttl: PARENT_TTL,
-  });
-  cookies.set(PARENT_COOKIE, sealed, {
-    ...baseCookie,
-    secure: cookieSecure(),
-    maxAge: PARENT_TTL,
-  });
-}
-
-export async function getParentSession(cookies: AstroCookies): Promise<ParentSession | null> {
-  const raw = cookies.get(PARENT_COOKIE)?.value;
-  if (!raw) return null;
+export async function getParentSession(cookies: AstroCookies): Promise<{userId: string; credentialId: string; email: string} | null> {
+  const raw = cookies.get(COOKIE)?.value;
+  if (!raw?.startsWith('parent:')) return null;
   try {
-    return await unsealData<ParentSession>(raw, {
-      password: sessionPassword(),
-      ttl: PARENT_TTL,
-    });
-  } catch {
-    return null;
-  }
+    const token = await unsealData<{role:string; credentialId:string; userId:string; version:number; email:string}>(raw.slice(7), {password:password(), ttl:KID_TTL});
+    if (token.role !== 'parent' || !token.credentialId || !token.userId) return null;
+    const credential = await getParentCredential(token.credentialId);
+    if (!credential?.passwordHash || credential.passwordVersion !== token.version || credential.userId !== token.userId) return null;
+    return {userId:credential.userId, credentialId:credential.id, email:token.email};
+  } catch {return null;}
 }
-
-export function clearParentSession(cookies: AstroCookies) {
-  cookies.delete(PARENT_COOKIE, { path: '/' });
+// email is the plaintext address just verified by the caller (e.g. at login) — it's sealed into
+// the session token itself rather than re-read from storage, since the stored copy is encrypted
+// at rest and this is the one moment we know the password was actually correct for it.
+export async function setParentSession(cookies: AstroCookies, credential: ParentCredential, email: string) {
+  const token = await sealData({role:'parent', credentialId:credential.id, userId:credential.userId, version:credential.passwordVersion, email}, {password:password(), ttl:KID_TTL});
+  cookies.set(COOKIE, 'parent:' + token, sessionOptions(KID_TTL));
 }
-
 export async function requireParentUser(cookies: AstroCookies): Promise<User | null> {
   const session = await getParentSession(cookies);
-  if (!session?.userId) return null;
-  const [user] = await db.select().from(users).where(eq(users.id, session.userId)).limit(1);
-  return user ?? null;
+  return session ? getUser(session.userId) : null;
 }
-
-export async function setFamilySession(cookies: AstroCookies, session: FamilySession) {
-  const sealed = await sealData(session, {
-    password: sessionPassword(),
-    ttl: FAMILY_TTL,
-  });
-  cookies.set(FAMILY_COOKIE, sealed, {
-    ...baseCookie,
-    secure: cookieSecure(),
-    maxAge: FAMILY_TTL,
-  });
+export function clearParentSession(cookies: AstroCookies) { cookies.delete(COOKIE, {path: '/'}); }
+export const clearFamilySession = clearParentSession;
+export async function setKidSession(cookies: AstroCookies, kid: Kid) {
+  const token = await sealData({role: 'kid', kidId: kid.id, userId: kid.userId, version: kid.passwordVersion}, {password: password(), ttl: KID_TTL});
+  cookies.set(COOKIE, 'kid:' + token, sessionOptions(KID_TTL));
 }
-
-/** Sliding renewal: re-issue cookie so expiry pushes out another 7 days. */
-export async function renewFamilySession(cookies: AstroCookies, session: FamilySession) {
-  await setFamilySession(cookies, session);
-}
-
-export async function getFamilySession(cookies: AstroCookies): Promise<FamilySession | null> {
-  const raw = cookies.get(FAMILY_COOKIE)?.value;
-  if (!raw) return null;
+export async function getSessionKid(cookies: AstroCookies): Promise<Kid | null> {
+  const raw = cookies.get(COOKIE)?.value;
+  if (!raw?.startsWith('kid:')) return null;
   try {
-    return await unsealData<FamilySession>(raw, {
-      password: sessionPassword(),
-      ttl: FAMILY_TTL,
-    });
-  } catch {
-    return null;
-  }
+    const token = await unsealData<{role: string; kidId: string; userId: string; version: number}>(raw.slice(4), {password: password(), ttl: KID_TTL});
+    if (token.role !== 'kid' || !token.kidId || !token.userId) return null;
+    const kid = await getKid(token.kidId);
+    return kid && kid.userId === token.userId && kid.passwordHash && (kid.passwordVersion) === token.version ? kid : null;
+  } catch { return null; }
 }
-
-export function clearFamilySession(cookies: AstroCookies) {
-  cookies.delete(FAMILY_COOKIE, { path: '/' });
-}
-
-/**
- * Validates family cookie for a slug. Renews on success (sliding window).
- * Returns the family owner user or null.
- */
-export async function requireFamilyAccess(
-  cookies: AstroCookies,
-  slug: string,
-): Promise<User | null> {
-  // Parents signed in with Google can read their own family pages without the shared password.
+export async function requireFamilyAccess(cookies: AstroCookies, slug: string) {
   const parent = await requireParentUser(cookies);
-  if (parent && parent.familySlug === slug) {
-    return parent;
-  }
-
-  const session = await getFamilySession(cookies);
-  if (!session || session.slug !== slug) return null;
-
-  const [user] = await db.select().from(users).where(eq(users.familySlug, slug)).limit(1);
-  if (!user) return null;
-  if (session.passwordVersion !== user.familyPasswordVersion) {
-    clearFamilySession(cookies);
-    return null;
-  }
-
-  await renewFamilySession(cookies, {
-    slug: user.familySlug,
-    passwordVersion: user.familyPasswordVersion,
-  });
-  return user;
+  return parent?.familySlug === slug ? parent : null;
 }
-
-export function setOAuthState(cookies: AstroCookies, state: string) {
-  cookies.set(OAUTH_STATE_COOKIE, state, {
-    ...baseCookie,
-    secure: cookieSecure(),
-    maxAge: 60 * 10,
-  });
+export async function getAccessibleKid(cookies: AstroCookies, slug: string, id: string): Promise<Kid | null> {
+  const parent = await requireFamilyAccess(cookies, slug);
+  const kid = parent ? await getKid(id) : await getSessionKid(cookies);
+  if (!kid || kid.id !== id) return null;
+  const owner = parent ?? await getUser(kid.userId);
+  return owner?.familySlug === slug && owner.id === kid.userId ? kid : null;
 }
-
-export function consumeOAuthState(cookies: AstroCookies): string | null {
-  const value = cookies.get(OAUTH_STATE_COOKIE)?.value ?? null;
-  cookies.delete(OAUTH_STATE_COOKIE, { path: '/' });
-  return value;
-}
-
-export function siteUrl(): string {
-  const url = (import.meta.env.SITE_URL || process.env.SITE_URL || '').replace(/\/$/, '');
-  if (!url) {
-    throw new Error('SITE_URL must be set (e.g. http://localhost:8888)');
-  }
-  return url;
-}
-
-export function googleRedirectUri(): string {
-  return (
-    import.meta.env.GOOGLE_REDIRECT_URI ||
-    process.env.GOOGLE_REDIRECT_URI ||
-    `${siteUrl()}/auth/callback`
-  );
+export function siteUrl() {
+  return (process.env.SITE_URL || import.meta.env.SITE_URL || (demoMode ? 'http://localhost:8888' : '')).replace(/\/$/, '');
 }

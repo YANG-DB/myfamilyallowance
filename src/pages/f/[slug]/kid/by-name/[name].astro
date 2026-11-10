@@ -1,0 +1,15 @@
+---
+import { getFamilyBySlug, getKidByName } from '../../../../../lib/data';
+
+const slug = Astro.params.slug;
+const name = Astro.params.name;
+if (!slug || !name || !/^[a-z0-9]{5}$/.test(slug)) {
+  return Astro.redirect('/');
+}
+
+const owner = await getFamilyBySlug(slug);
+const kid = owner ? await getKidByName(owner.id, name) : null;
+if (!kid) return Astro.redirect('/kid-login');
+
+return Astro.redirect(`/f/${slug}/kid/${kid.id}`);
+---

@@ -1,0 +1,9 @@
+---
+import { findKidByNameAcrossFamilies } from '../lib/data';
+
+const name = Astro.params.name;
+const match = name ? await findKidByNameAcrossFamilies(name) : null;
+if (!match) return Astro.redirect('/');
+
+return Astro.redirect(`/f/${match.owner.familySlug}/kid/${match.kid.id}`);
+---

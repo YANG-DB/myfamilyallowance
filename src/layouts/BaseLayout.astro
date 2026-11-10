@@ -16,6 +16,7 @@ const {
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="referrer" content="same-origin" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -32,12 +33,7 @@ const {
       <main>
         <slot />
       </main>
-      <footer class="site-footer">
-        <p>
-          Built for families who want a light, shared money tracker.
-          Created by <a href="https://www.raymondcamden.com">Raymond Camden</a>.
-          Source Available on <a href="https://github.com/cfjedimaster/myfamilyallowance">GitHub</a>
-        </p>
+      {showLegalLinks && <footer class="site-footer">
         {showLegalLinks && (
           <p class="footer-legal">
             <a href="/privacy">Privacy Policy</a>
@@ -45,7 +41,7 @@ const {
             <a href="/terms">Terms of Use</a>
           </p>
         )}
-      </footer>
+      </footer>}
     </div>
   </body>
 </html>

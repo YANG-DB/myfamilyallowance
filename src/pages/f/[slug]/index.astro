@@ -1,23 +1,24 @@
 ---
+import KidAvatar from '../../../components/KidAvatar.astro';
 import BaseLayout from '../../../layouts/BaseLayout.astro';
-import { requireFamilyAccess, siteUrl } from '../../../lib/auth';
-import { getKidsWithBalances } from '../../../lib/data';
+import { requireFamilyAccess, getSessionKid, siteUrl } from '../../../lib/auth';
+import { getFamilyBySlug, getKidsWithBalances } from '../../../lib/data';
 import { formatMoney } from '../../../lib/money';
-import { db } from '../../../../db';
-import { users } from '../../../../db/schema';
-import { eq } from 'drizzle-orm';
 
 const slug = Astro.params.slug;
 if (!slug || !/^[a-z0-9]{5}$/.test(slug)) {
   return Astro.redirect('/');
 }
 
-const [family] = await db.select().from(users).where(eq(users.familySlug, slug)).limit(1);
-if (!family) {
-  return Astro.redirect('/');
-}
-
 const owner = await requireFamilyAccess(Astro.cookies, slug);
+if (!owner) {
+  const kid = await getSessionKid(Astro.cookies);
+  if (kid) {
+    const parent = await getFamilyBySlug(slug);
+    if (parent?.id === kid.userId) return Astro.redirect(`/f/${slug}/kid/${kid.id}`);
+  }
+  return Astro.redirect('/kid-login');
+}
 const error = Astro.url.searchParams.get('error');
 
 let kids: Awaited<ReturnType<typeof getKidsWithBalances>> = [];
@@ -48,19 +49,7 @@ const familyUrl = `${siteUrl()}/f/${slug}`;
 
     {error && <div class="flash flash-err">{error}</div>}
 
-    {!owner ? (
-      <div class="panel" style="max-width:420px">
-        <h2>Enter family password</h2>
-        <p>Ask a parent if you don’t know it.</p>
-        <form class="form-grid" method="POST" action={`/api/family/${slug}/login`}>
-          <label>
-            Password
-            <input type="password" name="password" required autocomplete="current-password" />
-          </label>
-          <button class="btn btn-primary" type="submit">Unlock</button>
-        </form>
-      </div>
-    ) : kids.length === 0 ? (
+    {kids.length === 0 ? (
       <div class="panel">
         <p class="muted">No kids have been added yet.</p>
       </div>
@@ -69,8 +58,8 @@ const familyUrl = `${siteUrl()}/f/${slug}`;
         {kids.map((kid) => (
           <a class="kid-card" href={`/f/${slug}/kid/${kid.id}`} style="text-decoration:none;color:inherit">
             <div>
-              <h3>{kid.name}</h3>
-              <p class="meta">Weekly allowance {formatMoney(kid.weeklyAllowanceCents)}</p>
+              <div style="display:flex;align-items:center;gap:.8rem;margin-bottom:.6rem"><KidAvatar id={kid.avatarId} /><h3 style="margin:0">{kid.name}</h3></div>
+              <p class="meta">Monthly allowance {formatMoney(kid.monthlyAllowanceCents)}</p>
             </div>
             <div class:list={['balance', { neg: kid.balanceCents < 0 }]}>
               {formatMoney(kid.balanceCents)}

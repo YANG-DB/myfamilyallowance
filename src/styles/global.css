@@ -364,6 +364,21 @@ textarea:focus {
   color: #8f2f27;
 }
 
+.badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  margin-left: 0.4rem;
+  white-space: nowrap;
+}
+
+.badge-muted {
+  background: var(--line);
+  color: var(--muted);
+}
+
 .table-wrap {
   overflow-x: auto;
 }

@@ -1,0 +1,53 @@
+---
+// A semicircular gauge: three fixed severity zones (good/warning/critical, as fractions
+// of `reference`) with a needle pointing at the current ratio. `reference` is the "100%"
+// mark — a spending limit if set, otherwise falls back to an allowance total upstream.
+interface Props {
+  spent: number; // cents
+  reference: number; // cents — the value at which the needle points straight right
+  label: string;
+  amountLabel: string;
+}
+const { spent, reference, label, amountLabel } = Astro.props;
+const ratio = reference > 0 ? spent / reference : 0;
+const clamped = Math.max(0, Math.min(1, ratio));
+const over = ratio > 1;
+
+const cx = 100, cy = 100, r = 80;
+function polar(angleDeg: number, radius = r) {
+  const rad = (angleDeg * Math.PI) / 180;
+  return { x: cx + radius * Math.cos(rad), y: cy + radius * Math.sin(rad) };
+}
+function arcPath(startDeg: number, endDeg: number, radius = r) {
+  const start = polar(startDeg, radius);
+  const end = polar(endDeg, radius);
+  const largeArc = Math.abs(endDeg - startDeg) > 180 ? 1 : 0;
+  return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArc} 1 ${end.x} ${end.y}`;
+}
+const zones = [
+  { from: 0, to: 0.6, color: '#0ca30c' },
+  { from: 0.6, to: 0.85, color: '#fab219' },
+  { from: 0.85, to: 1, color: '#d03b3b' },
+];
+const needleAngle = 180 + clamped * 180;
+const needleTip = polar(needleAngle, r * 0.68);
+---
+<div class="gauge-wrap">
+  <svg viewBox="0 0 200 112" class="gauge-svg" role="img" aria-label={`${label}: ${amountLabel}`}>
+    {zones.map(z => (
+      <path d={arcPath(180 + z.from * 180, 180 + z.to * 180)} stroke={z.color} stroke-width="20" fill="none" stroke-linecap="round" />
+    ))}
+    <line x1={cx} y1={cy} x2={needleTip.x} y2={needleTip.y} stroke="#52514e" stroke-width="4" stroke-linecap="round" />
+    <circle cx={cx} cy={cy} r="7" fill="#52514e" />
+  </svg>
+  <p class="gauge-label">{label}</p>
+  <p class:list={['gauge-amount', { over }]}>{amountLabel}</p>
+</div>
+
+<style>
+  .gauge-wrap { text-align: center; }
+  .gauge-svg { width: 100%; max-width: 220px; height: auto; display: block; margin: 0 auto; }
+  .gauge-label { margin: .25rem 0 0; font-weight: 700; }
+  .gauge-amount { margin: 0; font-size: 1.1rem; }
+  .gauge-amount.over { color: var(--coral); }
+</style>

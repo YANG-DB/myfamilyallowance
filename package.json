@@ -10,25 +10,27 @@
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro",
-    "db:generate": "drizzle-kit generate",
-    "netlify:dev": "netlify dev"
+    "firebase:prepare": "npm run build && node scripts/prepare-firebase.mjs",
+    "firebase:deploy": "firebase deploy --only hosting,functions:family-allowance,firestore:rules,firestore:indexes --account liordana@gmail.com",
+    "test:security": "node --test tests/*.test.mjs",
+    "check": "astro check",
+    "setup:token": "node scripts/create-setup-token.mjs"
   },
   "dependencies": {
-    "@astrojs/netlify": "^8.2.4",
-    "@netlify/database": "^2.0.0",
+    "@astrojs/node": "^11.1.9",
     "astro": "^7.2.6",
-    "bcryptjs": "^3.0.3",
-    "cookie": "^2.0.1",
-    "drizzle-orm": "^1.0.0-beta.22",
+    "firebase-admin": "^14.5.0",
+    "firebase-functions": "^7.4.0",
     "iron-session": "^8.0.4"
   },
   "allowScripts": {
     "esbuild": true
   },
   "devDependencies": {
-    "@netlify/functions": "^6.0.0",
-    "@types/bcryptjs": "^2.4.6",
-    "@types/cookie": "^0.6.0",
-    "drizzle-kit": "^1.0.0-beta.22"
+    "@astrojs/check": "^0.9.12",
+    "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "^1.13.6"
   }
 }

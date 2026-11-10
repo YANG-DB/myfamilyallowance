@@ -1,7 +1,11 @@
 ---
+import KidAvatar from '../../components/KidAvatar.astro';
 import BaseLayout from '../../layouts/BaseLayout.astro';
-import { requireParentUser, siteUrl } from '../../lib/auth';
+import SpendGauge from '../../components/SpendGauge.astro';
+import CategoryField from '../../components/CategoryField.astro';
+import { requireParentUser, getParentSession, siteUrl } from '../../lib/auth';
 import { getKidsWithBalances } from '../../lib/data';
+import { getMonthlySpending, getYearlySpending, getMonthlyCategoryBreakdown, getCategoryTransactions, spendingMonth, spendingYear } from '../../lib/spending';
 import { formatMoney } from '../../lib/money';
 
 const user = await requireParentUser(Astro.cookies);
@@ -9,25 +13,174 @@ if (!user) {
   return Astro.redirect('/auth/google');
 }
 
+// The session carries the plaintext email sealed at the moment the password was verified at
+// login — the stored copy is encrypted at rest, so this is the only place it's ever shown.
+const session = await getParentSession(Astro.cookies);
+const signedInEmail = session?.email ?? '(unknown)';
 const kids = await getKidsWithBalances(user.id);
+const today = new Intl.DateTimeFormat('en-CA', {timeZone: 'America/Vancouver', year: 'numeric', month: '2-digit', day: '2-digit'}).format(new Date());
+const currentMonth = spendingMonth();
+const currentYear = spendingYear();
+const monthParam = Astro.url.searchParams.get('month') || '';
+const selectedMonth = /^\d{4}-\d{2}$/.test(monthParam) && monthParam <= currentMonth ? monthParam : currentMonth;
+const yearParam = Astro.url.searchParams.get('year') || '';
+const selectedYear = /^\d{4}$/.test(yearParam) && yearParam <= currentYear ? yearParam : currentYear;
+const monthlySpending = await Promise.all(kids.map(async (kid) => ({
+  id: kid.id, name: kid.name, cents: await getMonthlySpending(kid.id, selectedMonth),
+  reference: kid.monthlySpendingLimitCents ?? (kid.monthlyAllowanceCents > 0 ? kid.monthlyAllowanceCents : 0),
+})));
+const yearlySpending = await Promise.all(kids.map(async (kid) => ({
+  id: kid.id, name: kid.name, cents: await getYearlySpending(kid.id, selectedYear),
+})));
+const totalYearlySpending = yearlySpending.reduce((sum, k) => sum + k.cents, 0);
+const categoryBreakdown = await (async () => {
+  const byCategory = new Map<string, {cents: number; parentPaid: boolean}>();
+  for (const rows of await Promise.all(kids.map(kid => getMonthlyCategoryBreakdown(kid.id, selectedMonth)))) {
+    for (const row of rows) {
+      const existing = byCategory.get(row.category) ?? {cents: 0, parentPaid: row.parentPaid};
+      byCategory.set(row.category, {cents: existing.cents + row.cents, parentPaid: row.parentPaid});
+    }
+  }
+  return [...byCategory.entries()].map(([category, v]) => ({category, ...v})).sort((a, b) => b.cents - a.cents);
+})();
+const categoryFilter = Astro.url.searchParams.get('category') || '';
+const categoryFilterResult = categoryFilter
+  ? await Promise.all(kids.map(async (kid) => ({name: kid.name, ...(await getCategoryTransactions(kid.id, categoryFilter))})))
+  : null;
+const categoryFilterTotal = categoryFilterResult?.reduce((sum, k) => sum + k.total, 0) ?? 0;
+function categoryHref(category: string) {
+  return `/admin?month=${selectedMonth}&year=${selectedYear}&category=${encodeURIComponent(category)}#monthly-spending`;
+}
 const flash = Astro.url.searchParams.get('ok');
 const error = Astro.url.searchParams.get('error');
 const familyUrl = `${siteUrl()}/f/${user.familySlug}`;
-const hasPassword = Boolean(user.familyPasswordHash);
+const parentLoginUrl = `${siteUrl()}/parents`;
+function kidUrl(name: string) {
+  return `${siteUrl()}/${encodeURIComponent(name)}`;
+}
+function kidPageHref(id: string) {
+  return `/f/${user!.familySlug}/kid/${id}`;
+}
+
 ---
 
 <BaseLayout title="Family Admin · My Family Allowance">
   <Fragment slot="nav">
     <a class="btn btn-ghost btn-small" href="/">Home</a>
+    <a class="btn btn-ghost btn-small" href={`/f/${user.familySlug}/rules`}>Family rules</a>
     <a class="btn btn-ghost btn-small" href="/auth/logout">Log out</a>
   </Fragment>
 
   <section style="padding: 1rem 0 2.5rem">
     <h1>Family admin</h1>
-    <p>Signed in as {user.name} ({user.email}).</p>
+    <p>Signed in as {signedInEmail}.</p>
 
     {flash && <div class="flash flash-ok">{flash}</div>}
     {error && <div class="flash flash-err">{error}</div>}
+
+    {kids.length > 0 && <div class="panel tabs-wrap" id="monthly-spending">
+      <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap">
+        <h2 style="margin:0">Spending — all kids combined</h2>
+        <form method="GET" class="row" style="gap:.5rem">
+          <input type="hidden" name="year" value={selectedYear} />
+          <label class="row" style="gap:.4rem;align-items:center">
+            Month
+            <input type="month" name="month" max={currentMonth} value={selectedMonth} onchange="this.form.submit()" />
+          </label>
+        </form>
+      </div>
+      <h3>{new Date(`${selectedMonth}-01T12:00:00Z`).toLocaleDateString('en-US', {month: 'long', year: 'numeric', timeZone: 'UTC'})}</h3>
+      <div class="tabs row">
+        <button type="button" class:list={['tab-btn btn btn-small', categoryFilter ? 'btn-secondary' : 'btn-primary']} data-tab="overview">Overview</button>
+        <button type="button" class:list={['tab-btn btn btn-small', categoryFilter ? 'btn-primary' : 'btn-secondary']} data-tab="by-category">By category</button>
+      </div>
+      <div class="tab-panel" data-tab-panel="overview" style={categoryFilter ? 'display:none' : ''}>
+        <div class="kid-gauge-grid" style="flex-wrap:nowrap">
+          {monthlySpending.map(k => (
+            <a class="gauge-link" href={kidPageHref(k.id)}>
+              {k.reference > 0 ? (
+                <SpendGauge spent={k.cents} reference={k.reference} label={k.name} amountLabel={formatMoney(k.cents)} />
+              ) : (
+                <div class="gauge-wrap"><p class="gauge-label">{k.name}</p><p class="gauge-amount">{formatMoney(k.cents)}</p></div>
+              )}
+            </a>
+          ))}
+        </div>
+      </div>
+      <div class="tab-panel" data-tab-panel="by-category" style={categoryFilter ? '' : 'display:none'}>
+        {categoryBreakdown.length === 0 ? (
+          <p class="muted">No purchases recorded this month.</p>
+        ) : (
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Category</th><th>Spent this month (all kids)</th></tr></thead>
+              <tbody>
+                {categoryBreakdown.map((row) => (
+                  <tr>
+                    <td>
+                      <a href={categoryHref(row.category)}>{row.category}</a>
+                      {row.parentPaid && <span class="badge badge-muted" title="Paid by parents — not counted toward kids' monthly spending limits">Parent-paid</span>}
+                    </td>
+                    <td>{formatMoney(row.cents)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {categoryFilterResult && (
+          <div style="margin-top:1rem">
+            <div class="row" style="justify-content:space-between;align-items:center">
+              <h3 style="margin:0">{categoryFilter} — all time, all kids</h3>
+              <a class="btn btn-ghost btn-small" href={`/admin?month=${selectedMonth}&year=${selectedYear}#monthly-spending`}>Clear filter</a>
+            </div>
+            <p>Total spent: <strong>{formatMoney(categoryFilterTotal)}</strong></p>
+            {categoryFilterResult.every(k => k.items.length === 0) ? (
+              <p class="muted">No purchases in this category yet.</p>
+            ) : (
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Kid</th><th>Date</th><th>Amount</th><th>Memo</th></tr></thead>
+                  <tbody>
+                    {categoryFilterResult.flatMap((kid) => kid.items.map((tx) => (
+                      <tr>
+                        <td>{kid.name}</td>
+                        <td>{tx.createdAt.toLocaleDateString('en-US', {timeZone: 'America/Chicago', dateStyle: 'medium'})}</td>
+                        <td style="color:var(--coral)">{formatMoney(tx.amountCents, tx.currency)}</td>
+                        <td>{tx.memo || '—'}</td>
+                      </tr>
+                    )))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;margin-top:1.5rem">
+        <h3 style="margin:0">Yearly expense — {selectedYear}</h3>
+        <form method="GET" class="row" style="gap:.5rem">
+          <input type="hidden" name="month" value={selectedMonth} />
+          <label class="row" style="gap:.4rem;align-items:center">
+            Year
+            <select name="year" onchange="this.form.submit()">
+              {Array.from({length: 6}, (_, i) => String(Number(currentYear) - i)).map(y => (
+                <option value={y} selected={y === selectedYear}>{y}</option>
+              ))}
+            </select>
+          </label>
+        </form>
+      </div>
+      <p>Total spent in {selectedYear}: <strong>{formatMoney(totalYearlySpending)}</strong></p>
+      <div class="kid-gauge-grid">
+        {yearlySpending.map(k => (
+          <a class="gauge-link" href={kidPageHref(k.id)}>
+            <div class="gauge-wrap"><p class="gauge-label">{k.name}</p><p class="gauge-amount">{formatMoney(k.cents)}</p></div>
+          </a>
+        ))}
+      </div>
+    </div>}
 
     <div class="panel">
       <h2>Kids</h2>
@@ -38,14 +191,24 @@ const hasPassword = Boolean(user.familyPasswordHash);
           {kids.map((kid) => (
             <article class="kid-card">
               <div>
-                <h3>{kid.name}</h3>
+                <div style="display:flex;align-items:center;gap:.8rem;margin-bottom:.6rem"><KidAvatar id={kid.avatarId} /><h3 style="margin:0">{kid.name}</h3></div>
                 <div class:list={['balance', { neg: kid.balanceCents < 0 }]}>
                   {formatMoney(kid.balanceCents)}
                 </div>
                 <p class="meta">
-                  Weekly: {formatMoney(kid.weeklyAllowanceCents)} ·
+                  Monthly allowance: {formatMoney(kid.monthlyAllowanceCents)} · Monthly spending: {kid.monthlySpendingLimitCents == null ? 'No limit' : formatMoney(kid.monthlySpendingLimitCents)} ·
                   <a href={`/f/${user.familySlug}/kid/${kid.id}`}>View history</a>
                 </p>
+                <div class="family-url-row">
+                  <a class="family-url" href={kidUrl(kid.name)} target="_blank" rel="noopener noreferrer">{kidUrl(kid.name)}</a>
+                  <button type="button" class="family-url-copy" data-url={kidUrl(kid.name)} aria-label="Copy URL">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                    <span class="family-url-copied" aria-hidden="true">Copied!</span>
+                  </button>
+                </div>
               </div>
               <div class="stack">
                 <details class="inline-form">
@@ -53,12 +216,27 @@ const hasPassword = Boolean(user.familyPasswordHash);
                   <form class="form-grid" method="POST" action="/api/admin/transactions" style="margin-top:0.75rem">
                     <input type="hidden" name="kidId" value={kid.id} />
                     <label>
-                      Amount ($) — positive adds, negative deducts
+                      Amount — positive adds, negative deducts
                       <input type="number" name="amount" required step="0.01" placeholder="5.00" />
+                    </label>
+                    <label>
+                      Currency
+                      <select name="currency">
+                        <option value="CAD" selected>$ CAD</option>
+                        <option value="ILS">₪ ILS</option>
+                      </select>
                     </label>
                     <label>
                       Memo
                       <input type="text" name="memo" maxlength="200" placeholder="Chores bonus" />
+                    </label>
+                    <label>
+                      Category
+                      <CategoryField />
+                    </label>
+                    <label>
+                      Date
+                      <input type="date" name="date" max={today} value={today} />
                     </label>
                     <button class="btn btn-secondary btn-small" type="submit">Save transaction</button>
                   </form>
@@ -73,17 +251,59 @@ const hasPassword = Boolean(user.familyPasswordHash);
                       <input type="text" name="name" required maxlength="80" value={kid.name} />
                     </label>
                     <label>
-                      Weekly allowance ($)
+                      Monthly allowance ($)
                       <input
                         type="number"
-                        name="weeklyAllowance"
+                        name="monthlyAllowance"
                         required
                         min="0"
                         step="0.01"
-                        value={(kid.weeklyAllowanceCents / 100).toFixed(2)}
+                        value={(kid.monthlyAllowanceCents / 100).toFixed(2)}
                       />
                     </label>
+                    <label>
+                      Monthly spending amount ($)
+                      <input type="number" name="monthlySpendingLimit" min="0" max="21474836.47" step="0.01" value={kid.monthlySpendingLimitCents == null ? '' : (kid.monthlySpendingLimitCents / 100).toFixed(2)} placeholder="No limit" />
+                      <span class="meta">Leave blank for no limit. Warns before going over.</span>
+                    </label>
                     <button class="btn btn-secondary btn-small" type="submit">Save changes</button>
+                  </form>
+                </details>
+
+                <details class="inline-form">
+                  <summary>{kid.name}'s email</summary>
+                  <p class="meta">Stored encrypted — re-enter your own password to view or change it.</p>
+                  <div class="form-grid" id={`email-gate-${kid.id}`} style="margin-top:0.75rem">
+                    <label>
+                      Your password
+                      <input type="password" class="email-gate-password" autocomplete="current-password" />
+                    </label>
+                    <div class="row">
+                      <button type="button" class="btn btn-secondary btn-small email-gate-btn" data-kid={kid.id}>Show / edit email</button>
+                    </div>
+                    <p class="email-gate-error flash flash-err" role="alert" style="display:none"></p>
+                  </div>
+                  <form class="form-grid email-form" data-kid={kid.id} style="display:none;margin-top:0.75rem">
+                    <input type="hidden" class="email-form-password" />
+                    <label>
+                      Email
+                      <input type="email" class="email-form-input" maxlength="254" placeholder="Optional" />
+                    </label>
+                    <button class="btn btn-secondary btn-small" type="submit">Save email</button>
+                  </form>
+                </details>
+
+                <details class="inline-form">
+                  <summary>Kid sign-in &amp; password</summary>
+                  <p>Username: <strong>{kid.loginName}</strong></p>
+                  <p class="meta">{kid.passwordHash ? 'Password is set.' : 'Set a password to enable sign-in.'} Passwords stay hidden. Setting or disabling one signs out this kid’s existing sessions.</p>
+                  <form class="form-grid" method="POST" action={`/api/admin/kids/${kid.id}/password`}>
+                    <label>New password<input type="password" name="password" required minlength="12" maxlength="128" autocomplete="new-password" /></label>
+                    <label>Confirm password<input type="password" name="confirmPassword" required minlength="12" maxlength="128" autocomplete="new-password" /></label>
+                    <button class="btn btn-secondary btn-small" name="action" value="save" type="submit">Set password</button>
+                  </form>
+                  <form method="POST" action={`/api/admin/kids/${kid.id}/password`} style="margin-top:.5rem">
+                    <button class="btn btn-ghost btn-small" name="action" value="revoke" type="submit">Disable kid sign-in</button>
                   </form>
                 </details>
 
@@ -110,15 +330,20 @@ const hasPassword = Boolean(user.familyPasswordHash);
           <input type="text" name="name" required maxlength="80" placeholder="Alex" />
         </label>
         <label>
-          Weekly allowance ($)
+          Monthly allowance ($)
           <input
             type="number"
-            name="weeklyAllowance"
+            name="monthlyAllowance"
             required
             min="0"
             step="0.01"
-            placeholder="10.00"
+            placeholder="100.00"
           />
+        </label>
+        <label>
+          Monthly spending amount ($)
+          <input type="number" name="monthlySpendingLimit" min="0" max="21474836.47" step="0.01" placeholder="No limit" />
+          <span class="meta">Leave blank for no limit. Warns before going over.</span>
         </label>
         <div class="row">
           <button class="btn btn-primary" type="submit">Add kid</button>
@@ -127,8 +352,29 @@ const hasPassword = Boolean(user.familyPasswordHash);
     </div>
 
     <div class="panel">
+      <h2>Add another parent</h2>
+      <p class="meta">This person will be able to manage your family, including kids’ passwords and spending settings.</p>
+      <form class="form-grid two" method="POST" action="/api/admin/parents">
+        <label>Email<input type="email" name="email" required maxlength="254" autocomplete="off" /></label>
+        <label>New password<input type="password" name="password" required minlength="12" maxlength="128" autocomplete="new-password" /></label>
+        <label>Confirm password<input type="password" name="confirmPassword" required minlength="12" maxlength="128" autocomplete="new-password" /></label>
+        <div class="row"><button class="btn btn-primary" type="submit">Add parent</button></div>
+      </form>
+    </div>
+    <div class="panel">
+      <h2>Change my password</h2>
+      <p class="meta">Use 12–128 characters. A memorable phrase works well. Changing your password signs out all your sessions.</p>
+      <form class="form-grid" method="POST" action="/api/admin/password">
+        <label>Current password<input type="password" name="currentPassword" required maxlength="128" autocomplete="current-password" /></label>
+        <label>New password<input type="password" name="password" required minlength="12" maxlength="128" autocomplete="new-password" /></label>
+        <label>Confirm password<input type="password" name="confirmPassword" required minlength="12" maxlength="128" autocomplete="new-password" /></label>
+        <button class="btn btn-secondary" type="submit">Change password</button>
+      </form>
+    </div>
+
+    <div class="panel">
       <h2>Family page</h2>
-      <p class="meta">Share this URL with your kids. They’ll need the family password.</p>
+      <p class="meta">Share the kid sign-in page and give each kid their individual username and password.</p>
       <div class="family-url-row">
         <a class="family-url" href={familyUrl} target="_blank" rel="noopener noreferrer">{familyUrl}</a>
         <button
@@ -145,43 +391,133 @@ const hasPassword = Boolean(user.familyPasswordHash);
         </button>
       </div>
 
-      <form class="form-grid" method="POST" action="/api/admin/family-password" style="margin-top:1rem">
-        <label>
-          {hasPassword ? 'Change family password' : 'Set family password'}
-          <input
-            type="password"
-            name="password"
-            required
-            minlength="4"
-            maxlength="72"
-            autocomplete="new-password"
-            placeholder="At least 4 characters"
-          />
-        </label>
-        <button class="btn btn-primary" type="submit">
-          {hasPassword ? 'Update password' : 'Save password'}
+      <p><a class="btn btn-secondary" href="/kid-login">Kid sign-in page</a></p>
+      <p class="meta">Kids can only open their own account. The family overview is for parents.</p>
+
+      <h3>Parent sign-in</h3>
+      <p class="meta">Only share this with other parents — it signs in with a parent email and password.</p>
+      <div class="family-url-row">
+        <a class="family-url" href={parentLoginUrl} target="_blank" rel="noopener noreferrer">{parentLoginUrl}</a>
+        <button type="button" class="family-url-copy" data-url={parentLoginUrl} aria-label="Copy URL">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          <span class="family-url-copied" aria-hidden="true">Copied!</span>
         </button>
-      </form>
+      </div>
     </div>
   </section>
 
   <script>
-    document.querySelector('.family-url-copy')?.addEventListener('click', async (event) => {
-      const btn = event.currentTarget;
-      if (!(btn instanceof HTMLButtonElement)) return;
-      const url = btn.dataset.url;
-      if (!url) return;
-      try {
-        await navigator.clipboard.writeText(url);
-        btn.setAttribute('aria-label', 'Copied!');
-        btn.classList.add('is-copied');
-        setTimeout(() => {
-          btn.setAttribute('aria-label', 'Copy URL');
-          btn.classList.remove('is-copied');
-        }, 1500);
-      } catch {
-        // Clipboard API unavailable or denied
+    document.querySelectorAll('.tabs-wrap').forEach((wrap) => {
+      const buttons = Array.from(wrap.querySelectorAll('.tab-btn'));
+      const panels = Array.from(wrap.querySelectorAll('.tab-panel'));
+      buttons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const tab = btn instanceof HTMLElement ? btn.dataset.tab : null;
+          buttons.forEach((b) => {
+            const active = b === btn;
+            b.classList.toggle('btn-primary', active);
+            b.classList.toggle('btn-secondary', !active);
+          });
+          panels.forEach((p) => {
+            if (p instanceof HTMLElement) p.style.display = p.dataset.tabPanel === tab ? '' : 'none';
+          });
+        });
+      });
+    });
+
+    document.querySelectorAll('.category-field').forEach((field) => {
+      const select = field.querySelector('.category-select');
+      const hidden = field.querySelector('.category-value');
+      const other = field.querySelector('.category-other-input');
+      if (!(select instanceof HTMLSelectElement) || !(hidden instanceof HTMLInputElement) || !(other instanceof HTMLInputElement)) return;
+      const selectEl = select, hiddenEl = hidden, otherEl = other;
+      function sync() {
+        if (selectEl.value === '__other__') {
+          otherEl.style.display = '';
+          hiddenEl.value = otherEl.value;
+        } else {
+          otherEl.style.display = 'none';
+          hiddenEl.value = selectEl.value;
+        }
       }
+      selectEl.addEventListener('change', sync);
+      otherEl.addEventListener('input', () => { hiddenEl.value = otherEl.value; });
+    });
+
+    document.querySelectorAll('.family-url-copy').forEach((btn) => {
+      btn.addEventListener('click', async (event) => {
+        const target = event.currentTarget;
+        if (!(target instanceof HTMLButtonElement)) return;
+        const url = target.dataset.url;
+        if (!url) return;
+        try {
+          await navigator.clipboard.writeText(url);
+          target.setAttribute('aria-label', 'Copied!');
+          target.classList.add('is-copied');
+          setTimeout(() => {
+            target.setAttribute('aria-label', 'Copy URL');
+            target.classList.remove('is-copied');
+          }, 1500);
+        } catch {
+          // Clipboard API unavailable or denied
+        }
+      });
+    });
+  </script>
+
+  <script define:vars={{familySlug: user.familySlug}}>
+    document.querySelectorAll('.email-gate-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const kidId = btn.dataset.kid;
+        const gate = document.getElementById(`email-gate-${kidId}`);
+        const passwordInput = gate.querySelector('.email-gate-password');
+        const errorEl = gate.querySelector('.email-gate-error');
+        const form = document.querySelector(`.email-form[data-kid="${kidId}"]`);
+        const formPassword = form.querySelector('.email-form-password');
+        const emailInput = form.querySelector('.email-form-input');
+        errorEl.style.display = 'none';
+        const password = passwordInput.value;
+        const res = await fetch(`/api/family/${familySlug}/kid/${kidId}/email`, {
+          method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams({password}),
+        });
+        const data = await res.json();
+        if (!data.ok) { errorEl.textContent = data.error || 'Incorrect password.'; errorEl.style.display = ''; return; }
+        emailInput.value = data.email || '';
+        formPassword.value = password;
+        form.style.display = '';
+        gate.style.display = 'none';
+      });
+    });
+    document.querySelectorAll('.email-form').forEach((form) => {
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const kidId = form.dataset.kid;
+        const gate = document.getElementById(`email-gate-${kidId}`);
+        const errorEl = gate.querySelector('.email-gate-error');
+        const formPassword = form.querySelector('.email-form-password');
+        const emailInput = form.querySelector('.email-form-input');
+        const res = await fetch(`/api/family/${familySlug}/kid/${kidId}/email`, {
+          method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams({password: formPassword.value, email: emailInput.value}),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          errorEl.textContent = data.error || 'Could not save.'; errorEl.style.display = '';
+          gate.style.display = ''; form.style.display = 'none';
+        }
+      });
     });
   </script>
 </BaseLayout>
+
+<style>
+  .kid-gauge-grid {display:flex;flex-wrap:wrap;gap:1.5rem;justify-content:center;margin-top:1rem;}
+  .kid-gauge-grid > * {flex:0 1 180px;}
+  .gauge-link {display:block;text-decoration:none;color:inherit;border-radius:12px;transition:background .15s;}
+  .gauge-link:hover, .gauge-link:focus-visible {background:var(--line);}
+  .gauge-wrap {text-align:center;}
+  .gauge-label {margin:.25rem 0 0;font-weight:700;}
+  .gauge-amount {margin:0;font-size:1.1rem;}
+</style>

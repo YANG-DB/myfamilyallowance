@@ -1,0 +1,8 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // All family reads and writes go through the server, which checks roles/ownership.
+    // This also blocks authenticated users from bypassing the app's permissions.
+    match /{document=**} { allow read, write: if false; }
+  }
+}

@@ -1,7 +1,6 @@
+import { parseMonthlyLimit } from '../../../../lib/spending';
+import { updateKid, deleteKid } from '../../../../lib/data';
 import type { APIRoute } from 'astro';
-import { and, eq } from 'drizzle-orm';
-import { db } from '../../../../../db';
-import { kids } from '../../../../../db/schema';
 import { requireParentUser } from '../../../../lib/auth';
 import { getOwnedKid } from '../../../../lib/data';
 import { parseMoneyInput } from '../../../../lib/money';
@@ -26,28 +25,23 @@ export const POST: APIRoute = async ({ params, request, cookies, redirect }) => 
   const method = String(form.get('_method') || 'PATCH').toUpperCase();
 
   if (method === 'DELETE') {
-    await db.delete(kids).where(and(eq(kids.id, kidId), eq(kids.userId, user.id)));
+    await deleteKid(owned);
     return redirect('/admin?ok=' + encodeURIComponent('Kid deleted.'));
   }
 
   const name = String(form.get('name') || '').trim();
-  const weekly = parseMoneyInput(String(form.get('weeklyAllowance') || ''));
+  const monthlyAllowance = parseMoneyInput(String(form.get('monthlyAllowance') || ''));
+  const monthly = parseMonthlyLimit(String(form.get('monthlySpendingLimit') || ''));
+  if (monthly === undefined) return redirect('/admin?error=' + encodeURIComponent('Enter a valid monthly spending amount, or leave it blank for no limit.'));
 
   if (!name || name.length > 80) {
     return redirect('/admin?error=' + encodeURIComponent('Enter a kid name (max 80 characters).'));
   }
-  if (weekly === null || weekly < 0) {
-    return redirect('/admin?error=' + encodeURIComponent('Enter a valid weekly allowance.'));
+  if (monthlyAllowance === null || monthlyAllowance < 0) {
+    return redirect('/admin?error=' + encodeURIComponent('Enter a valid monthly allowance.'));
   }
 
-  await db
-    .update(kids)
-    .set({
-      name,
-      weeklyAllowanceCents: weekly,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(kids.id, kidId), eq(kids.userId, user.id)));
+  await updateKid(owned, {name, monthlyAllowanceCents: monthlyAllowance, monthlySpendingLimitCents: monthly});
 
   return redirect('/admin?ok=' + encodeURIComponent('Kid updated.'));
 };

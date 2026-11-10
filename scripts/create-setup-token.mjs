@@ -1,0 +1,10 @@
+import { randomBytes } from 'node:crypto';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+const dir=await mkdtemp(join(tmpdir(),'family-allowance-setup-'));
+const path=join(dir,'setup-token');
+await writeFile(path,randomBytes(24).toString('hex'),{mode:0o600,flag:'wx'});
+console.log(`Private initial setup token saved to ${path}`);
+console.log('Store its contents privately, then supply this file to Firebase Secret Manager:');
+console.log(`firebase functions:secrets:set INITIAL_SETUP_TOKEN --data-file '${path}' --project <your-firebase-project-id>`);

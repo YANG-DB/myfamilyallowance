@@ -18,11 +18,31 @@ pnpm-debug.log*
 .env.production
 .env.local
 
+# generated local-only demo session secret
+.demo-secret
+
 # Netlify
 .netlify/
 
 # macOS-specific files
 .DS_Store
+._*
 
 # jetbrains setting folder
 .idea/
+
+# Firebase generated server and local credentials
+.firebase-app/
+.firebase/
+*-debug.log
+.env.*
+!.env.example
+!.env.firebase.example
+
+# Personal family financial data and one-off admin scripts tied to this deployment
+# (hardcoded real project id/owner email) — never meant for the public repo.
+/data/
+scripts/import-csv-transactions.mjs
+scripts/import-kids-transactions.mjs
+scripts/latest-transactions.mjs
+scripts/set-kid-passwords.mjs

@@ -1,0 +1,51 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { getSessionKid } from '../lib/auth';
+import { getUser, listSignInNames } from '../lib/data';
+const kid = await getSessionKid(Astro.cookies);
+if (kid) {
+  const parent = await getUser(kid.userId);
+  if (parent) return Astro.redirect(`/f/${parent.familySlug}/kid/${kid.id}`);
+}
+const error = Astro.url.searchParams.get('error');
+const names = await listSignInNames();
+---
+<BaseLayout title="Sign in · My Family Allowance">
+  <section class="panel" style="max-width:480px;margin:2rem auto">
+    <h1>Your money, your space</h1>
+    <p>Pick who you are, then enter your password.</p>
+    {error && <p class="flash flash-err" role="alert">{error}</p>}
+
+    <div class="row" id="who-list" style="flex-wrap:wrap">
+      {names.map((n) => (
+        <button type="button" class="btn btn-secondary who-btn" data-login={n.loginName}>{n.name}</button>
+      ))}
+      <a class="btn btn-ghost who-btn" href="/parent-login">Parent</a>
+    </div>
+
+    <form class="form-grid" method="POST" action="/api/auth/kid" id="kid-login-form" style="display:none;margin-top:1rem">
+      <input type="hidden" name="username" id="username-field" />
+      <p id="who-chosen" class="meta"></p>
+      <label>My password<input type="password" name="password" required maxlength="128" autocomplete="current-password" id="password-field" /></label>
+      <button class="btn btn-primary" type="submit">Open my account</button>
+    </form>
+  </section>
+
+  <script>
+    const list = document.getElementById('who-list');
+    const form = document.getElementById('kid-login-form');
+    const usernameField = document.getElementById('username-field');
+    const passwordField = document.getElementById('password-field');
+    const chosen = document.getElementById('who-chosen');
+    list?.querySelectorAll('.who-btn[data-login]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (!(btn instanceof HTMLButtonElement) || !(form instanceof HTMLFormElement) ||
+            !(usernameField instanceof HTMLInputElement) || !(passwordField instanceof HTMLInputElement)) return;
+        usernameField.value = btn.dataset.login ?? '';
+        if (chosen) chosen.textContent = `Signing in as ${btn.textContent}`;
+        form.style.display = '';
+        passwordField.focus();
+      });
+    });
+  </script>
+</BaseLayout>

@@ -1,0 +1,24 @@
+---
+import { RULE_CATEGORIES } from '../lib/rules';
+interface Props {
+  name?: string;
+  value?: string | null;
+  blankLabel?: string | null; // null = no blank option (a category is always picked)
+}
+const { name = 'category', value = '', blankLabel = '— none —' } = Astro.props;
+const known = (RULE_CATEGORIES as readonly string[]).includes(value ?? '');
+const isOther = !!value && !known;
+---
+<span class="category-field">
+  <input type="hidden" class="category-value" name={name} value={value ?? ''} />
+  <select class="category-select" aria-label="Category">
+    {blankLabel !== null && <option value="" selected={!value}>{blankLabel}</option>}
+    {RULE_CATEGORIES.map((c) => <option value={c} selected={value === c}>{c}</option>)}
+    <option value="__other__" selected={isOther}>Other…</option>
+  </select>
+  <input type="text" class="category-other-input" maxlength="80" placeholder="Custom category" value={isOther ? value : ''} style={isOther ? '' : 'display:none'} />
+</span>
+
+<style>
+  .category-field { display: inline-flex; flex-direction: column; gap: .3rem; width: 100%; }
+</style>

@@ -1,8 +1,14 @@
 ---
+import KidAvatar from '../../../../components/KidAvatar.astro';
+import SpendGauge from '../../../../components/SpendGauge.astro';
+import CategoryField from '../../../../components/CategoryField.astro';
 import BaseLayout from '../../../../layouts/BaseLayout.astro';
-import { requireFamilyAccess } from '../../../../lib/auth';
-import { getKidBalance, getOwnedKid, listTransactions } from '../../../../lib/data';
-import { formatMoney } from '../../../../lib/money';
+import { getAccessibleKid, requireFamilyAccess } from '../../../../lib/auth';
+import { getKidBalance, listTransactions, listPlannedItems } from '../../../../lib/data';
+import type { TransactionSort } from '../../../../lib/data';
+import { getMonthlySpending, getMonthlyCategoryBreakdown, getCategoryTransactions, isParentPaidTransaction } from '../../../../lib/spending';
+import { formatMoney, toCadCents } from '../../../../lib/money';
+import type { CurrencyCode } from '../../../../lib/models';
 
 const slug = Astro.params.slug;
 const kidId = Astro.params.id;
@@ -10,48 +16,184 @@ if (!slug || !kidId || !/^[a-z0-9]{5}$/.test(slug)) {
   return Astro.redirect('/');
 }
 
-const owner = await requireFamilyAccess(Astro.cookies, slug);
-if (!owner) {
-  return Astro.redirect(`/f/${slug}`);
-}
-
-const kid = await getOwnedKid(owner.id, kidId);
-if (!kid) {
-  return new Response('Not found', { status: 404 });
-}
+const kid = await getAccessibleKid(Astro.cookies, slug, kidId);
+if (!kid) return Astro.redirect('/kid-login');
+const isParent = !!(await requireFamilyAccess(Astro.cookies, slug));
 
 const page = Math.max(1, Number.parseInt(Astro.url.searchParams.get('page') || '1', 10) || 1);
-const { items, hasMore } = await listTransactions(kid.id, page, 20);
+const sortOptions: TransactionSort[] = ['date', 'amount', 'memo', 'category'];
+const sortRaw = Astro.url.searchParams.get('sort') || '';
+const sort: TransactionSort = sortOptions.includes(sortRaw as TransactionSort) ? (sortRaw as TransactionSort) : 'date';
+const dir: 'asc' | 'desc' = Astro.url.searchParams.get('dir') === 'asc' ? 'asc' : 'desc';
+const txMemo = Astro.url.searchParams.get('txMemo') || '';
+const txCategory = Astro.url.searchParams.get('txCategory') || '';
+const txFrom = Astro.url.searchParams.get('txFrom') || '';
+const txTo = Astro.url.searchParams.get('txTo') || '';
+const txAmountMinRaw = Astro.url.searchParams.get('txAmountMin') || '';
+const txAmountMaxRaw = Astro.url.searchParams.get('txAmountMax') || '';
+const hasTxFilter = !!(txMemo || txCategory || txFrom || txTo || txAmountMinRaw || txAmountMaxRaw);
+const { items, totalPages } = await listTransactions(kid.id, page, 20, {
+  sort, dir,
+  filter: {
+    memo: txMemo || undefined,
+    category: txCategory || undefined,
+    dateFrom: txFrom || undefined,
+    dateTo: txTo || undefined,
+    amountMin: txAmountMinRaw ? Math.round(Number(txAmountMinRaw) * 100) : undefined,
+    amountMax: txAmountMaxRaw ? Math.round(Number(txAmountMaxRaw) * 100) : undefined,
+  },
+});
+// Windowed page list: first, last, current ±1, with null standing in for an ellipsis gap.
+function pageWindow(current: number, total: number): (number | null)[] {
+  const pages = new Set([1, total, current - 1, current, current + 1].filter(n => n >= 1 && n <= total));
+  const sorted = [...pages].sort((a, b) => a - b);
+  const result: (number | null)[] = [];
+  sorted.forEach((n, i) => {
+    if (i > 0 && n - sorted[i - 1] > 1) result.push(null);
+    result.push(n);
+  });
+  return result;
+}
+const pages = pageWindow(page, totalPages);
+function txQuery(overrides: Record<string, string | number | undefined> = {}) {
+  const params = new URLSearchParams();
+  const base: Record<string, string | number | undefined> = {
+    page, sort, dir, txMemo, txCategory, txFrom, txTo,
+    txAmountMin: txAmountMinRaw, txAmountMax: txAmountMaxRaw, ...overrides,
+  };
+  for (const [k, v] of Object.entries(base)) if (v) params.set(k, String(v));
+  return params.toString();
+}
+function pageHref(n: number) { return `/f/${slug}/kid/${kid!.id}?${txQuery({page: n})}#transaction-history`; }
+function sortHref(column: TransactionSort) {
+  const nextDir = sort === column && dir === 'asc' ? 'desc' : 'asc';
+  return `/f/${slug}/kid/${kid!.id}?${txQuery({page: 1, sort: column, dir: nextDir})}#transaction-history`;
+}
+function sortIndicator(column: TransactionSort) {
+  return sort === column ? (dir === 'asc' ? ' ▲' : ' ▼') : '';
+}
 const balance = await getKidBalance(kid.id);
+const spent = await getMonthlySpending(kid.id);
+const limit = kid.monthlySpendingLimitCents;
+const remaining = limit == null ? null : limit - spent;
+// Without a parent-set limit there's no "100%" to measure against, so fall back to the
+// monthly allowance as a reference point for the bar — still useful, just not a hard cap.
+const barReference = limit ?? (kid.monthlyAllowanceCents > 0 ? kid.monthlyAllowanceCents : null);
+const today = new Intl.DateTimeFormat('en-CA', {timeZone: 'America/Vancouver', year: 'numeric', month: '2-digit', day: '2-digit'}).format(new Date());
+const pendingAmount = Astro.url.searchParams.get('purchaseAmount') || '';
+const pendingDescription = Astro.url.searchParams.get('purchaseDescription') || '';
+const pendingLocation = Astro.url.searchParams.get('purchaseLocation') || '';
+const pendingDate = Astro.url.searchParams.get('purchaseDate') || today;
+const pendingCategory = Astro.url.searchParams.get('purchaseCategory') || '';
+const pendingCurrencyRaw = Astro.url.searchParams.get('purchaseCurrency') || 'CAD';
+const pendingCurrency: CurrencyCode = pendingCurrencyRaw === 'ILS' ? 'ILS' : 'CAD';
+const categoryBreakdown = await getMonthlyCategoryBreakdown(kid.id);
+const categoryFilter = Astro.url.searchParams.get('category') || '';
+const categoryFilterResult = categoryFilter ? await getCategoryTransactions(kid.id, categoryFilter) : null;
+function categoryHref(category: string) {
+  return `/f/${slug}/kid/${kid!.id}?category=${encodeURIComponent(category)}#monthly-spending`;
+}
+const returnTo = pageHref(page);
+const pendingCents = Math.round(Number(pendingAmount) * 100);
+const pendingCadCents = toCadCents(pendingCents, pendingCurrency);
+const showWarning = limit != null && /^\d+(?:\.\d{1,2})?$/.test(pendingAmount) && pendingCents > 0 && pendingCents <= 2147483647 && pendingDescription.trim().length > 0 && pendingDescription.length <= 200 && spent + pendingCadCents > limit;
+const error = Astro.url.searchParams.get('error');
+const success = Astro.url.searchParams.get('ok');
+const plannedItems = (await listPlannedItems(kid.id)).filter(item => !item.archived);
+function buyHref(item: {amountCents: number; description: string; currency: CurrencyCode}) {
+  const q = new URLSearchParams({purchaseAmount: (item.amountCents / 100).toFixed(2), purchaseDescription: item.description, purchaseCurrency: item.currency});
+  return `/f/${slug}/kid/${kid!.id}?${q.toString()}#add-purchase`;
+}
 ---
 
 <BaseLayout title={`${kid.name} · My Family Allowance`}>
   <Fragment slot="nav">
-    <a class="btn btn-secondary btn-small" href={`/f/${slug}`}>All kids</a>
+    <a class="btn btn-ghost btn-small" href="/auth/logout">Log out</a>
+    <a class="btn btn-ghost btn-small" href={`/f/${slug}/rules`}>Family rules</a>
+    <a class="btn btn-secondary btn-small" href={`/f/${slug}`}>Family home</a>
   </Fragment>
 
   <section style="padding: 1rem 0 2.5rem">
-    <h1>{kid.name}</h1>
-    <p class:list={['balance', { neg: balance < 0 }]}>{formatMoney(balance)}</p>
-    <p class="meta">Weekly allowance {formatMoney(kid.weeklyAllowanceCents)}</p>
+    <div class="kid-profile-heading">
+      <a class="avatar-link" href={`/f/${slug}/kid/${kid.id}/avatar`} aria-label={`Change ${kid.name}’s character`}>
+        <KidAvatar id={kid.avatarId} size="large" />
+        <span>{kid.avatarId ? 'Change character' : 'Choose character'}</span>
+      </a>
+      <div>
+        <h1 style="margin:0">{kid.name}</h1>
+        <p class:list={['balance', { neg: balance < 0 }]} style="margin:.25rem 0">{formatMoney(balance)}</p>
+        <p class="meta">Monthly allowance {formatMoney(kid.monthlyAllowanceCents)}</p>
+      </div>
+    </div>
 
-    <div class="panel">
-      <h2>Transaction history</h2>
+    <details class="panel" id="transaction-history" open={Astro.url.searchParams.has('page') || hasTxFilter}>
+      <summary style="cursor:pointer"><h2 style="display:inline;margin:0">Transaction history</h2></summary>
+
+      <details class="inline-form" open={hasTxFilter}>
+        <summary>Filter</summary>
+        <form class="form-grid two" method="GET" style="margin-top:0.75rem">
+          <input type="hidden" name="sort" value={sort} />
+          <input type="hidden" name="dir" value={dir} />
+          <label>
+            Memo contains
+            <input type="text" name="txMemo" value={txMemo} placeholder="e.g. pizza" />
+          </label>
+          <label>
+            Category
+            <CategoryField name="txCategory" value={txCategory} blankLabel="Any" />
+          </label>
+          <label>
+            From date
+            <input type="date" name="txFrom" max={today} value={txFrom} />
+          </label>
+          <label>
+            To date
+            <input type="date" name="txTo" max={today} value={txTo} />
+          </label>
+          <label>
+            Min amount
+            <input type="number" name="txAmountMin" step="0.01" value={txAmountMinRaw} placeholder="-50.00" />
+          </label>
+          <label>
+            Max amount
+            <input type="number" name="txAmountMax" step="0.01" value={txAmountMaxRaw} placeholder="50.00" />
+          </label>
+          <div class="row">
+            <button class="btn btn-primary btn-small" type="submit">Apply</button>
+            {hasTxFilter && <a class="btn btn-ghost btn-small" href={`/f/${slug}/kid/${kid.id}#transaction-history`}>Clear</a>}
+          </div>
+        </form>
+      </details>
+
       {items.length === 0 ? (
-        <p class="muted">No transactions yet.</p>
+        <p class="muted">{hasTxFilter ? 'No transactions match these filters.' : 'No transactions yet.'}</p>
       ) : (
+        <>
+        {isParent && (
+          <form id="bulk-delete-form" method="POST" action={`/api/admin/kids/${kid.id}/transactions`} onsubmit="return confirm('Delete the selected transactions?');">
+            <input type="hidden" name="redirectTo" value={returnTo} />
+            <input type="hidden" name="_method" value="DELETE" />
+          </form>
+        )}
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>Date</th>
-                <th>Amount</th>
-                <th>Memo</th>
+                {isParent && <th><input type="checkbox" id="tx-select-all" title="Select all" /></th>}
+                <th><a href={sortHref('date')}>Date{sortIndicator('date')}</a></th>
+                <th><a href={sortHref('amount')}>Amount{sortIndicator('amount')}</a></th>
+                <th><a href={sortHref('memo')}>Memo{sortIndicator('memo')}</a></th>
+                <th><a href={sortHref('category')}>Category{sortIndicator('category')}</a></th>
+                {isParent && <th></th>}
               </tr>
             </thead>
             <tbody>
               {items.map((tx) => (
+                <>
                 <tr>
+                  {isParent && (
+                    <td><input type="checkbox" class="tx-select" name="txIds" value={tx.id} form="bulk-delete-form" /></td>
+                  )}
                   <td>
                     {tx.createdAt.toLocaleString('en-US', {
                       timeZone: 'America/Chicago',
@@ -60,32 +202,454 @@ const balance = await getKidBalance(kid.id);
                     })}
                   </td>
                   <td style={tx.amountCents < 0 ? 'color:var(--coral)' : 'color:var(--leaf-deep)'}>
-                    {formatMoney(tx.amountCents)}
+                    {formatMoney(tx.amountCents, tx.currency)}
                   </td>
                   <td>{tx.memo || (tx.fromAllowance ? 'Allowance added!' : '—')}</td>
+                  <td>
+                    {tx.category || '—'}
+                    {isParentPaidTransaction(tx) && (
+                      <span class="badge badge-muted" title="Paid by parents — not counted toward the monthly spending limit">Parent-paid</span>
+                    )}
+                  </td>
+                  {isParent && (
+                    <td><button type="button" class="btn btn-secondary btn-small edit-tx-btn" data-tx={tx.id}>Edit</button></td>
+                  )}
                 </tr>
+                {isParent && (
+                  <tr class="edit-tx-row" data-tx-row={tx.id} style="display:none">
+                    <td colspan="6">
+                      <form class="form-grid two" method="POST" action={`/api/admin/kids/${kid.id}/transactions/${tx.id}`}>
+                        <input type="hidden" name="redirectTo" value={returnTo} />
+                        <label>
+                          Date
+                          <input type="date" name="date" max={today} value={new Intl.DateTimeFormat('en-CA', {timeZone: 'America/Vancouver', year: 'numeric', month: '2-digit', day: '2-digit'}).format(tx.createdAt)} />
+                        </label>
+                        <label>
+                          Amount (positive adds, negative deducts)
+                          <input type="number" name="amount" required step="0.01" value={(tx.amountCents / 100).toFixed(2)} />
+                        </label>
+                        <label>
+                          Currency
+                          <select name="currency">
+                            <option value="CAD" selected={(tx.currency ?? 'CAD') === 'CAD'}>$ CAD</option>
+                            <option value="ILS" selected={tx.currency === 'ILS'}>₪ ILS</option>
+                          </select>
+                        </label>
+                        <label>
+                          Memo
+                          <input type="text" name="memo" maxlength="200" value={tx.memo ?? ''} />
+                        </label>
+                        <label>
+                          Category
+                          <CategoryField value={tx.category} />
+                        </label>
+                        <label class="row" style="align-items:center;gap:.4rem">
+                          <input type="checkbox" name="parentPaid" value="yes" checked={!!tx.parentPaid} />
+                          Parent-paid (excluded from monthly spending limit)
+                        </label>
+                        <div class="row">
+                          <button class="btn btn-primary btn-small" type="submit">Save</button>
+                        </div>
+                      </form>
+                      <form method="POST" action={`/api/admin/kids/${kid.id}/transactions/${tx.id}`} onsubmit="return confirm('Delete this transaction?');" style="margin-top:.5rem">
+                        <input type="hidden" name="redirectTo" value={returnTo} />
+                        <input type="hidden" name="_method" value="DELETE" />
+                        <button class="btn btn-secondary btn-small" type="submit" style="color:var(--coral)">Delete transaction</button>
+                      </form>
+                    </td>
+                  </tr>
+                )}
+                </>
               ))}
             </tbody>
           </table>
         </div>
+        {isParent && (
+          <div class="row" style="justify-content:space-between;align-items:center;margin-top:.5rem">
+            <span class="meta" id="tx-select-count">0 selected</span>
+            <button class="btn btn-secondary btn-small" type="submit" form="bulk-delete-form" id="tx-delete-selected" style="color:var(--coral)" disabled>Delete selected</button>
+          </div>
+        )}
+        </>
       )}
 
-      <div class="pager">
-        {page > 1 ? (
-          <a class="btn btn-secondary btn-small" href={`/f/${slug}/kid/${kid.id}?page=${page - 1}`}>
-            Newer
-          </a>
+      {totalPages > 1 && (
+        <div class="row pager" style="justify-content:center">
+          {page > 1 && (
+            <a class="btn btn-secondary btn-small" href={pageHref(page - 1)}>‹ Prev</a>
+          )}
+          {pages.map((n) => n === null ? (
+            <span class="meta">…</span>
+          ) : (
+            <a
+              class={`btn btn-small ${n === page ? 'btn-primary' : 'btn-secondary'}`}
+              href={pageHref(n)}
+              aria-current={n === page ? 'page' : undefined}
+            >
+              {n}
+            </a>
+          ))}
+          {page < totalPages && (
+            <a class="btn btn-secondary btn-small" href={pageHref(page + 1)}>Next ›</a>
+          )}
+        </div>
+      )}
+    </details>
+
+    {isParent && <script>
+      document.querySelectorAll('.edit-tx-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = btn instanceof HTMLElement ? btn.dataset.tx : null;
+          const row = id ? document.querySelector(`.edit-tx-row[data-tx-row="${id}"]`) : null;
+          if (row instanceof HTMLElement) row.style.display = row.style.display === 'none' ? '' : 'none';
+        });
+      });
+
+      const selectAll = document.getElementById('tx-select-all');
+      const deleteSelectedBtn = document.getElementById('tx-delete-selected');
+      const selectCount = document.getElementById('tx-select-count');
+      const checkboxes = () => Array.from(document.querySelectorAll('.tx-select'));
+      function refreshSelection() {
+        const checked = checkboxes().filter((c) => c instanceof HTMLInputElement && c.checked);
+        if (selectCount) selectCount.textContent = `${checked.length} selected`;
+        if (deleteSelectedBtn instanceof HTMLButtonElement) deleteSelectedBtn.disabled = checked.length === 0;
+        if (selectAll instanceof HTMLInputElement) selectAll.checked = checked.length > 0 && checked.length === checkboxes().length;
+      }
+      checkboxes().forEach((c) => c.addEventListener('change', refreshSelection));
+      selectAll?.addEventListener('change', () => {
+        const checked = selectAll instanceof HTMLInputElement && selectAll.checked;
+        checkboxes().forEach((c) => { if (c instanceof HTMLInputElement) c.checked = checked; });
+        refreshSelection();
+      });
+      refreshSelection();
+    </script>}
+
+    <script>
+      document.querySelectorAll('.tabs-wrap').forEach((wrap) => {
+        const buttons = Array.from(wrap.querySelectorAll('.tab-btn'));
+        const panels = Array.from(wrap.querySelectorAll('.tab-panel'));
+        buttons.forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const tab = btn instanceof HTMLElement ? btn.dataset.tab : null;
+            buttons.forEach((b) => {
+              const active = b === btn;
+              b.classList.toggle('btn-primary', active);
+              b.classList.toggle('btn-secondary', !active);
+            });
+            panels.forEach((p) => {
+              if (p instanceof HTMLElement) p.style.display = p.dataset.tabPanel === tab ? '' : 'none';
+            });
+          });
+        });
+      });
+    </script>
+
+    <script>
+      document.querySelectorAll('.category-field').forEach((field) => {
+        const select = field.querySelector('.category-select');
+        const hidden = field.querySelector('.category-value');
+        const other = field.querySelector('.category-other-input');
+        if (!(select instanceof HTMLSelectElement) || !(hidden instanceof HTMLInputElement) || !(other instanceof HTMLInputElement)) return;
+        const selectEl = select, hiddenEl = hidden, otherEl = other;
+        function sync() {
+          if (selectEl.value === '__other__') {
+            otherEl.style.display = '';
+            hiddenEl.value = otherEl.value;
+          } else {
+            otherEl.style.display = 'none';
+            hiddenEl.value = selectEl.value;
+          }
+        }
+        selectEl.addEventListener('change', sync);
+        otherEl.addEventListener('input', () => { hiddenEl.value = otherEl.value; });
+      });
+    </script>
+
+    <div class="panel tabs-wrap" id="monthly-spending">
+      <h2>Monthly spending</h2>
+      <div class="tabs row">
+        <button type="button" class:list={['tab-btn btn btn-small', categoryFilter ? 'btn-secondary' : 'btn-primary']} data-tab="overview">Overview</button>
+        <button type="button" class:list={['tab-btn btn btn-small', categoryFilter ? 'btn-primary' : 'btn-secondary']} data-tab="by-category">By category</button>
+      </div>
+      <div class="tab-panel" data-tab-panel="overview" style={categoryFilter ? 'display:none' : ''}>
+        {limit != null && <p>Monthly amount: <strong>{formatMoney(limit)}</strong></p>}
+        {barReference != null ? (
+          <SpendGauge spent={spent} reference={barReference} label="Spent this month" amountLabel={formatMoney(spent)} />
         ) : (
-          <span></span>
+          <p>Spent this month: <strong>{formatMoney(spent)}</strong></p>
         )}
-        {hasMore ? (
-          <a class="btn btn-secondary btn-small" href={`/f/${slug}/kid/${kid.id}?page=${page + 1}`}>
-            Older
-          </a>
+        {limit == null && <p class="meta">Your parent hasn’t set a monthly spending amount.{barReference != null && ` Shown against your monthly allowance (${formatMoney(barReference)}).`}</p>}
+        {limit != null && (
+          <p class:list={['balance', {neg: remaining! < 0}]} style="font-size:1.5rem">
+            {remaining! < 0 ? `${formatMoney(-remaining!)} over your monthly amount` : `${formatMoney(remaining!)} left this month`}
+          </p>
+        )}
+        <p class="meta">Resets on the 1st of each month (Vancouver time). Purchases paid by your parents (<span class="badge badge-muted">Parent-paid</span> categories) don’t count toward this.</p>
+      </div>
+      <div class="tab-panel" data-tab-panel="by-category" style={categoryFilter ? '' : 'display:none'}>
+        {categoryBreakdown.length === 0 ? (
+          <p class="muted">No purchases recorded this month.</p>
         ) : (
-          <span class="meta">End of history</span>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Category</th><th>Spent this month</th></tr></thead>
+              <tbody>
+                {categoryBreakdown.map((row) => (
+                  <tr>
+                    <td>
+                      <a href={categoryHref(row.category)}>{row.category}</a>
+                      {row.parentPaid && <span class="badge badge-muted" title="Paid by parents — not counted toward the monthly spending limit">Parent-paid</span>}
+                    </td>
+                    <td>{formatMoney(row.cents)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {categoryFilterResult && (
+          <div style="margin-top:1rem">
+            <div class="row" style="justify-content:space-between;align-items:center">
+              <h3 style="margin:0">{categoryFilter} — all time</h3>
+              <a class="btn btn-ghost btn-small" href={`/f/${slug}/kid/${kid.id}#monthly-spending`}>Clear filter</a>
+            </div>
+            <p>Total spent: <strong>{formatMoney(categoryFilterResult.total)}</strong></p>
+            {categoryFilterResult.items.length === 0 ? (
+              <p class="muted">No purchases in this category yet.</p>
+            ) : (
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Date</th><th>Amount</th><th>Memo</th></tr></thead>
+                  <tbody>
+                    {categoryFilterResult.items.map((tx) => (
+                      <tr>
+                        <td>{tx.createdAt.toLocaleDateString('en-US', {timeZone: 'America/Chicago', dateStyle: 'medium'})}</td>
+                        <td style="color:var(--coral)">{formatMoney(tx.amountCents, tx.currency)}</td>
+                        <td>{tx.memo || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
+
+    {showWarning && <div class="panel" role="alert" style="border:2px solid var(--coral)">
+      <h2>This purchase goes over your monthly amount</h2>
+      <p>Spending {formatMoney(pendingCents, pendingCurrency)} on “{pendingDescription}” brings this month’s spending to <strong>{formatMoney(spent + pendingCadCents)}</strong> — <strong>{formatMoney(spent + pendingCadCents - limit!)} over</strong> your {formatMoney(limit!)} monthly amount.</p>
+      <p>Check your plan before adding this purchase.</p>
+      <form method="POST" action={`/api/family/${slug}/kid/${kid.id}`} class="row">
+        <input type="hidden" name="amount" value={pendingAmount} />
+        <input type="hidden" name="description" value={pendingDescription} />
+        <input type="hidden" name="location" value={pendingLocation} />
+        <input type="hidden" name="currency" value={pendingCurrency} />
+        <input type="hidden" name="date" value={pendingDate} />
+        <input type="hidden" name="category" value={pendingCategory} />
+        <input type="hidden" name="confirmOverLimit" value="yes" />
+        <button class="btn btn-primary" type="submit">Add purchase anyway</button>
+        <a class="btn btn-secondary" href={`/f/${slug}/kid/${kid.id}`}>Cancel</a>
+      </form>
+    </div>}
+
+    {success && <div class="flash flash-ok" role="status">{success}</div>}
+    {error && <div class="flash flash-err" role="alert">{error}</div>}
+
+    <div class="panel" id="add-purchase">
+      <h2 id="add-purchase-title">Add purchase</h2>
+      <p class="meta" id="add-purchase-hint">Bought something? Record it here to subtract it from your balance.</p>
+      <form class="form-grid two" method="POST" action={`/api/family/${slug}/kid/${kid.id}`} id="add-purchase-form">
+        <label>
+          Type
+          <select name="type" id="purchase-type">
+            <option value="purchase">Purchase</option>
+            <option value="gift">Gift from family</option>
+          </select>
+        </label>
+        <label>
+          Amount
+          <input type="number" name="amount" required min="0.01" max="21474836.47" step="0.01" inputmode="decimal" placeholder="5.00" value={pendingAmount} />
+        </label>
+        <label>
+          Currency
+          <select name="currency">
+            <option value="CAD" selected={pendingCurrency === 'CAD'}>$ CAD</option>
+            <option value="ILS" selected={pendingCurrency === 'ILS'}>₪ ILS</option>
+          </select>
+        </label>
+        <label id="purchase-description-label">
+          What did you buy?
+          <input type="text" name="description" required maxlength="200" placeholder="Lunch, a book, a game…" value={pendingDescription} />
+        </label>
+        <label id="purchase-location-label">
+          Where did you buy it?
+          <input type="text" name="location" maxlength="200" placeholder="Optional — the store or place" value={pendingLocation} />
+        </label>
+        <label id="purchase-category-label">
+          Category
+          <CategoryField value={pendingCategory} />
+        </label>
+        <label>
+          Date
+          <input type="date" name="date" max={today} value={pendingDate} />
+        </label>
+        <div class="row">
+          <button class="btn btn-primary" type="submit" id="add-purchase-submit">Add purchase</button>
+        </div>
+      </form>
+    </div>
+
+    <script>
+      const typeSelect = document.getElementById('purchase-type');
+      const title = document.getElementById('add-purchase-title');
+      const hint = document.getElementById('add-purchase-hint');
+      const descriptionLabel = document.getElementById('purchase-description-label');
+      const descriptionInput = descriptionLabel?.querySelector('input');
+      const locationLabel = document.getElementById('purchase-location-label');
+      const categoryLabel = document.getElementById('purchase-category-label');
+      const submitButton = document.getElementById('add-purchase-submit');
+      typeSelect?.addEventListener('change', () => {
+        if (!(typeSelect instanceof HTMLSelectElement)) return;
+        const isGift = typeSelect.value === 'gift';
+        if (title) title.textContent = isGift ? 'Add gift from family' : 'Add purchase';
+        if (hint) hint.textContent = isGift
+          ? 'Got money from family? Record it here to add it to your balance.'
+          : 'Bought something? Record it here to subtract it from your balance.';
+        if (descriptionLabel) descriptionLabel.firstChild!.textContent = isGift ? 'Who was it from?' : 'What did you buy?';
+        if (descriptionInput instanceof HTMLInputElement) descriptionInput.placeholder = isGift ? 'Grandma, Dad, Aunt Sam…' : 'Lunch, a book, a game…';
+        if (locationLabel instanceof HTMLElement) locationLabel.style.display = isGift ? 'none' : '';
+        if (categoryLabel instanceof HTMLElement) categoryLabel.style.display = isGift ? 'none' : '';
+        if (submitButton) submitButton.textContent = isGift ? 'Add gift' : 'Add purchase';
+      });
+    </script>
+
+    <div class="panel" id="planned-spending">
+      <h2>Planned next month spending</h2>
+      <p class="meta">Saving up for something? Add the link, what it is, and how much it costs.</p>
+
+      {plannedItems.length === 0 ? (
+        <p class="muted">Nothing planned yet.</p>
+      ) : (
+        <div class="stack" style="margin-top:0.75rem">
+          {plannedItems.map((item) => (
+            <div class="kid-card" style="display:flex;gap:1rem;align-items:flex-start">
+              {item.thumbnailUrl && (
+                <img class="planned-thumb" src={item.thumbnailUrl} alt="" loading="lazy" referrerpolicy="no-referrer" style="width:64px;height:64px;object-fit:cover;border-radius:8px;flex-shrink:0" />
+              )}
+              <div style="flex:1">
+                <p style="margin:0 0 .3rem"><a href={item.url} target="_blank" rel="noopener noreferrer">{item.description}</a></p>
+                <p class="meta" style="margin:0 0 .6rem">{formatMoney(item.amountCents, item.currency)}</p>
+                <div class="row">
+                  <a class="btn btn-secondary btn-small" href={buyHref(item)}>Buy now</a>
+                  <form method="POST" action={`/api/family/${slug}/kid/${kid.id}/planned/${item.id}`}>
+                    <input type="hidden" name="action" value="archive" />
+                    <button class="btn btn-ghost btn-small" type="submit">Archive</button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <form class="form-grid two" method="POST" action={`/api/family/${slug}/kid/${kid.id}/planned`} style="margin-top:1rem">
+        <label>
+          Link to the item
+          <input type="url" name="url" required maxlength="2000" placeholder="https://…" />
+        </label>
+        <label>
+          What is it?
+          <input type="text" name="description" required maxlength="200" placeholder="Headphones, a game…" />
+        </label>
+        <label>
+          Amount
+          <input type="number" name="amount" required min="0.01" max="21474836.47" step="0.01" inputmode="decimal" placeholder="25.00" />
+        </label>
+        <label>
+          Currency
+          <select name="currency">
+            <option value="CAD" selected>$ CAD</option>
+            <option value="ILS">₪ ILS</option>
+          </select>
+        </label>
+        <div class="row">
+          <button class="btn btn-primary" type="submit">Add to planned spending</button>
+        </div>
+      </form>
+    </div>
+
+    <script>
+      document.querySelectorAll('.planned-thumb').forEach((img) => {
+        img.addEventListener('error', () => { if (img instanceof HTMLElement) img.style.display = 'none'; });
+      });
+    </script>
+
+    <details class="panel">
+      <summary style="cursor:pointer"><h2 style="display:inline;margin:0">My email</h2></summary>
+      <p class="meta">Optional — lets your parent reach you about password changes and such.</p>
+      <p class="meta">It's stored encrypted and only shown here after you re-enter your password.</p>
+
+      <div class="form-grid" id="email-gate" style="margin-top:0.75rem">
+        <label>
+          Current password
+          <input type="password" id="email-gate-password" autocomplete="current-password" />
+        </label>
+        <div class="row">
+          <button type="button" class="btn btn-secondary btn-small" id="email-gate-btn">Show / edit my email</button>
+        </div>
+        <p id="email-gate-error" class="flash flash-err" role="alert" style="display:none"></p>
+      </div>
+
+      <form class="form-grid" id="email-form" style="display:none;margin-top:0.75rem">
+        <input type="hidden" id="email-form-password" name="password" />
+        <label>
+          Email
+          <input type="email" name="email" id="email-form-input" maxlength="254" placeholder="you@example.com" />
+        </label>
+        <button class="btn btn-secondary btn-small" type="submit">Save email</button>
+      </form>
+    </details>
+
+    <script define:vars={{emailApi: `/api/family/${slug}/kid/${kid.id}/email`}}>
+      const gate = document.getElementById('email-gate');
+      const gatePassword = document.getElementById('email-gate-password');
+      const gateBtn = document.getElementById('email-gate-btn');
+      const gateError = document.getElementById('email-gate-error');
+      const form = document.getElementById('email-form');
+      const formPassword = document.getElementById('email-form-password');
+      const emailInput = document.getElementById('email-form-input');
+
+      async function reveal() {
+        gateError.style.display = 'none';
+        const password = gatePassword.value;
+        const res = await fetch(emailApi, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams({password})});
+        const data = await res.json();
+        if (!data.ok) { gateError.textContent = data.error || 'Incorrect password.'; gateError.style.display = ''; return; }
+        emailInput.value = data.email || '';
+        formPassword.value = password;
+        form.style.display = '';
+        gate.style.display = 'none';
+      }
+      gateBtn?.addEventListener('click', reveal);
+
+      form?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        gateError.style.display = 'none';
+        const res = await fetch(emailApi, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:new URLSearchParams({password: formPassword.value, email: emailInput.value})});
+        const data = await res.json();
+        if (!data.ok) { gateError.textContent = data.error || 'Could not save.'; gateError.style.display = ''; gate.style.display = ''; form.style.display = 'none'; return; }
+      });
+    </script>
   </section>
 </BaseLayout>
+
+<style>
+  .kid-profile-heading {display:flex;align-items:center;gap:1.5rem;margin:1rem 0 2rem;}
+  .kid-profile-heading > div {min-width:0;overflow-wrap:anywhere;}
+  .avatar-link {display:flex;flex-direction:column;align-items:center;gap:.5rem;font-size:.75rem;font-weight:800;text-decoration:none;flex-shrink:0;}
+  .avatar-link:focus-visible {outline:3px solid var(--leaf-deep);outline-offset:5px;border-radius:20px;}
+  .avatar-link:hover {text-decoration:underline;}
+  @media(max-width:400px) {.kid-profile-heading {gap:1rem;}}
+</style>
